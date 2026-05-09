@@ -133,6 +133,9 @@ function normalizeFileConfig(raw: Record<string, unknown>): Partial<WatchConfig>
       maxIterations: typeof runtimeRaw['maxIterations'] === 'number' ? runtimeRaw['maxIterations'] : undefined,
       contextLimit: typeof runtimeRaw['contextLimit'] === 'number' ? runtimeRaw['contextLimit'] : undefined,
       retryAttempts: typeof runtimeRaw['retryAttempts'] === 'number' ? runtimeRaw['retryAttempts'] : undefined,
+      policy: typeof runtimeRaw['policy'] === 'object' && runtimeRaw['policy'] !== null && !Array.isArray(runtimeRaw['policy'])
+        ? runtimeRaw['policy'] as NonNullable<WatchConfig['runtime']>['policy']
+        : undefined,
     };
   }
   if (typeof raw['verbose'] === 'boolean') result.verbose = raw['verbose'];

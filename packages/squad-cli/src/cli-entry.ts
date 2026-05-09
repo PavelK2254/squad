@@ -98,7 +98,7 @@ import { BOLD, RESET, DIM, RED, GREEN, YELLOW } from './cli/core/output.js';
 import { runInit } from './cli/core/init.js';
 import { runCost } from './cli/commands/cost.js';
 import { getPackageVersion } from './cli/core/version.js';
-import type { RuntimeConfig } from './runtime/types.js';
+import type { RuntimeConfig, RuntimePolicy } from './runtime/types.js';
 
 // Lazy-load squad-sdk to avoid triggering @github/copilot-sdk import on Node 24+
 // (Issue: copilot-sdk has broken ESM imports - vscode-jsonrpc/node without .js extension)
@@ -116,6 +116,15 @@ const VERSION = getPackageVersion();
  */
 function getSquadStartDir(): string {
   return process.env['SQUAD_TEAM_ROOT'] || process.cwd();
+}
+
+function yoloRuntimePolicy(): RuntimePolicy {
+  return {
+    blockedCommands: [],
+    allowedCommands: [],
+    enforceSandbox: false,
+    branchIsolation: false,
+  };
 }
 
 async function main(): Promise<void> {
@@ -185,6 +194,7 @@ async function main(): Promise<void> {
     console.log(`                    --runtime-exec <bin> (runtime executable, default: claude)`);
     console.log(`                    --runtime-model <id> (runtime model override)`);
     console.log(`                    --runtime-timeout <sec> (runtime timeout)`);
+    console.log(`                    --yolo / --autopilot (permissive runtime policy preset)`);
     console.log(`                    --max-concurrent N (parallel issue limit, default 1)`);
     console.log(`                    --timeout N (max minutes per issue, default 30)`);
     console.log(`             Capabilities (opt-in via --<name> or config.json):`);
@@ -510,8 +520,9 @@ async function main(): Promise<void> {
     const runtimeRetries = (runtimeRetryIdx !== -1 && args[runtimeRetryIdx + 1])
       ? parseInt(args[runtimeRetryIdx + 1]!, 10)
       : undefined;
+    const yoloMode = args.includes('--yolo') || args.includes('--autopilot');
     const runtimeConfig: RuntimeConfig | undefined = (
-      runtimeExec || runtimeModel || runtimeTimeout || runtimeMaxIterations || runtimeRetries
+      runtimeExec || runtimeModel || runtimeTimeout || runtimeMaxIterations || runtimeRetries || yoloMode
     )
       ? {
         provider: 'claude',
@@ -520,6 +531,7 @@ async function main(): Promise<void> {
         timeoutSeconds: runtimeTimeout,
         maxIterations: runtimeMaxIterations,
         retryAttempts: runtimeRetries,
+        policy: yoloMode ? yoloRuntimePolicy() : undefined,
       }
       : undefined;
 
@@ -644,6 +656,7 @@ async function main(): Promise<void> {
       console.log(`  ${BOLD}--runtime-exec <bin>${RESET}  Runtime executable (default: claude)`);
       console.log(`  ${BOLD}--runtime-model <id>${RESET} Runtime model override`);
       console.log(`  ${BOLD}--runtime-timeout <sec>${RESET} Runtime timeout override`);
+      console.log(`  ${BOLD}--yolo | --autopilot${RESET}  Permissive runtime policy preset`);
       console.log(`  ${BOLD}--agent-cmd <cmd>${RESET}     Override the agent command`);
       console.log(`\nCapabilities (composable with the loop):`);
       console.log(`  ${BOLD}--self-pull${RESET}           git fetch/pull at round start`);
@@ -719,12 +732,14 @@ async function main(): Promise<void> {
     const runtimeTimeout = (runtimeTimeoutIdx !== -1 && args[runtimeTimeoutIdx + 1])
       ? parseInt(args[runtimeTimeoutIdx + 1]!, 10)
       : undefined;
-    const runtimeConfig: RuntimeConfig | undefined = (runtimeExec || runtimeModel || runtimeTimeout)
+    const yoloMode = args.includes('--yolo') || args.includes('--autopilot');
+    const runtimeConfig: RuntimeConfig | undefined = (runtimeExec || runtimeModel || runtimeTimeout || yoloMode)
       ? {
         provider: 'claude',
         executable: runtimeExec,
         model: runtimeModel,
         timeoutSeconds: runtimeTimeout,
+        policy: yoloMode ? yoloRuntimePolicy() : undefined,
       }
       : undefined;
 

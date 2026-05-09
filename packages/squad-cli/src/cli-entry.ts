@@ -98,6 +98,7 @@ import { BOLD, RESET, DIM, RED, GREEN, YELLOW } from './cli/core/output.js';
 import { runInit } from './cli/core/init.js';
 import { runCost } from './cli/commands/cost.js';
 import { getPackageVersion } from './cli/core/version.js';
+import type { RuntimeConfig } from './runtime/types.js';
 
 // Lazy-load squad-sdk to avoid triggering @github/copilot-sdk import on Node 24+
 // (Issue: copilot-sdk has broken ESM imports - vscode-jsonrpc/node without .js extension)
@@ -180,7 +181,10 @@ async function main(): Promise<void> {
     console.log(`             Default: checks every 10 minutes (Ctrl+C to stop)`);
     console.log(`             Core flags:`);
     console.log(`                    --execute (spawn agents to work on issues)`);
-    console.log(`                    --copilot-flags "..." (extra copilot CLI flags)`);
+    console.log(`                    --copilot-flags "..." (legacy passthrough flags)`);
+    console.log(`                    --runtime-exec <bin> (runtime executable, default: claude)`);
+    console.log(`                    --runtime-model <id> (runtime model override)`);
+    console.log(`                    --runtime-timeout <sec> (runtime timeout)`);
     console.log(`                    --max-concurrent N (parallel issue limit, default 1)`);
     console.log(`                    --timeout N (max minutes per issue, default 30)`);
     console.log(`             Capabilities (opt-in via --<name> or config.json):`);
@@ -213,7 +217,7 @@ async function main(): Promise<void> {
     console.log(`             Usage: import <file> [--force]`);
     console.log(`  ${BOLD}scrub-emails${RESET}  Remove email addresses from Squad state files`);
     console.log(`             Usage: scrub-emails [directory] (default: .ai-team/)`);
-    console.log(`  ${BOLD}start${RESET}      Start Copilot with remote access from phone/browser`);
+    console.log(`  ${BOLD}start${RESET}      Start runtime shell with remote access from phone/browser`);
     console.log(`             Usage: start [--tunnel] [--port <n>] [--command <cmd>]`);
     console.log(`                    [copilot flags...]`);
     console.log(`             Examples: start --tunnel --yolo`);
@@ -247,7 +251,7 @@ async function main(): Promise<void> {
     console.log(`                    apply <name> [--force] | save <name>`);
     console.log(`                    init [--remote]`);
     console.log(`  ${BOLD}cast${RESET}       Show current session cast (project + personal agents)`);
-    console.log(`  ${BOLD}rc${RESET}         Start Remote Control bridge (phone/browser → Copilot)`);
+    console.log(`  ${BOLD}rc${RESET}         Start Remote Control bridge (phone/browser → runtime)`);
     console.log(`             Usage: rc [--tunnel] [--port <n>] [--path <dir>]`);
     console.log(`  ${BOLD}copilot-bridge${RESET}  Check Copilot ACP stdio compatibility`);
     console.log(`  ${BOLD}init-remote${RESET}    Link project to remote team root (shorthand)`);
@@ -486,6 +490,39 @@ async function main(): Promise<void> {
       ? args[authUserIdx + 1]
       : undefined;
 
+    const runtimeExecIdx = args.indexOf('--runtime-exec');
+    const runtimeExec = (runtimeExecIdx !== -1 && args[runtimeExecIdx + 1])
+      ? args[runtimeExecIdx + 1]
+      : undefined;
+    const runtimeModelIdx = args.indexOf('--runtime-model');
+    const runtimeModel = (runtimeModelIdx !== -1 && args[runtimeModelIdx + 1])
+      ? args[runtimeModelIdx + 1]
+      : undefined;
+    const runtimeTimeoutIdx = args.indexOf('--runtime-timeout');
+    const runtimeTimeout = (runtimeTimeoutIdx !== -1 && args[runtimeTimeoutIdx + 1])
+      ? parseInt(args[runtimeTimeoutIdx + 1]!, 10)
+      : undefined;
+    const runtimeMaxIterationsIdx = args.indexOf('--runtime-max-iterations');
+    const runtimeMaxIterations = (runtimeMaxIterationsIdx !== -1 && args[runtimeMaxIterationsIdx + 1])
+      ? parseInt(args[runtimeMaxIterationsIdx + 1]!, 10)
+      : undefined;
+    const runtimeRetryIdx = args.indexOf('--runtime-retries');
+    const runtimeRetries = (runtimeRetryIdx !== -1 && args[runtimeRetryIdx + 1])
+      ? parseInt(args[runtimeRetryIdx + 1]!, 10)
+      : undefined;
+    const runtimeConfig: RuntimeConfig | undefined = (
+      runtimeExec || runtimeModel || runtimeTimeout || runtimeMaxIterations || runtimeRetries
+    )
+      ? {
+        provider: 'claude',
+        executable: runtimeExec,
+        model: runtimeModel,
+        timeoutSeconds: runtimeTimeout,
+        maxIterations: runtimeMaxIterations,
+        retryAttempts: runtimeRetries,
+      }
+      : undefined;
+
     // --notify-level runtime validation
     const notifyLevelIdx = args.indexOf('--notify-level');
     const rawNotifyLevel = (notifyLevelIdx !== -1 && args[notifyLevelIdx + 1])
@@ -558,6 +595,7 @@ async function main(): Promise<void> {
       dispatchMode,
       logFile,
       authUser,
+      runtime: runtimeConfig,
       notifyLevel,
       overnightStart,
       overnightEnd,
@@ -572,6 +610,7 @@ async function main(): Promise<void> {
     const knownValueFlags = new Set([
       '--interval', '--copilot-flags', '--agent-cmd', '--max-concurrent', '--timeout', '--board-project', '--auth-user',
       '--dispatch-mode', '--log-file', '--notify-level', '--overnight-start', '--overnight-end', '--sentinel-file', '--state-backend',
+      '--runtime-exec', '--runtime-model', '--runtime-timeout', '--runtime-max-iterations', '--runtime-retries',
     ]);
     const watchArgStart = args.indexOf(cmd) + 1;
     const watchArgs = args.slice(watchArgStart);
@@ -601,7 +640,10 @@ async function main(): Promise<void> {
       console.log(`  ${BOLD}--file <path>${RESET}         Path to loop file (default: loop.md)`);
       console.log(`  ${BOLD}--interval <min>${RESET}      Override loop interval in minutes`);
       console.log(`  ${BOLD}--timeout <min>${RESET}       Override max minutes per cycle`);
-      console.log(`  ${BOLD}--copilot-flags "..."${RESET} Extra flags for Copilot CLI`);
+      console.log(`  ${BOLD}--copilot-flags "..."${RESET} Legacy passthrough flags`);
+      console.log(`  ${BOLD}--runtime-exec <bin>${RESET}  Runtime executable (default: claude)`);
+      console.log(`  ${BOLD}--runtime-model <id>${RESET} Runtime model override`);
+      console.log(`  ${BOLD}--runtime-timeout <sec>${RESET} Runtime timeout override`);
       console.log(`  ${BOLD}--agent-cmd <cmd>${RESET}     Override the agent command`);
       console.log(`\nCapabilities (composable with the loop):`);
       console.log(`  ${BOLD}--self-pull${RESET}           git fetch/pull at round start`);
@@ -665,6 +707,27 @@ async function main(): Promise<void> {
       ? args[agentCmdIdx + 1]
       : undefined;
 
+    const runtimeExecIdx = args.indexOf('--runtime-exec');
+    const runtimeExec = (runtimeExecIdx !== -1 && args[runtimeExecIdx + 1])
+      ? args[runtimeExecIdx + 1]
+      : undefined;
+    const runtimeModelIdx = args.indexOf('--runtime-model');
+    const runtimeModel = (runtimeModelIdx !== -1 && args[runtimeModelIdx + 1])
+      ? args[runtimeModelIdx + 1]
+      : undefined;
+    const runtimeTimeoutIdx = args.indexOf('--runtime-timeout');
+    const runtimeTimeout = (runtimeTimeoutIdx !== -1 && args[runtimeTimeoutIdx + 1])
+      ? parseInt(args[runtimeTimeoutIdx + 1]!, 10)
+      : undefined;
+    const runtimeConfig: RuntimeConfig | undefined = (runtimeExec || runtimeModel || runtimeTimeout)
+      ? {
+        provider: 'claude',
+        executable: runtimeExec,
+        model: runtimeModel,
+        timeoutSeconds: runtimeTimeout,
+      }
+      : undefined;
+
     // Capability flags
     const { createDefaultRegistry: createReg } = await import('./cli/commands/watch/index.js');
     const reg = createReg();
@@ -680,6 +743,7 @@ async function main(): Promise<void> {
       timeout,
       copilotFlags,
       agentCmd,
+      runtime: runtimeConfig,
       capabilities,
     });
     return;
@@ -827,8 +891,8 @@ async function main(): Promise<void> {
     const cmdIdx = args.indexOf('--command');
     const customCmd = (cmdIdx !== -1 && args[cmdIdx + 1]) ? args[cmdIdx + 1] : undefined;
     const squadFlags = ['start', '--tunnel', '--port', port.toString(), '--command', customCmd || ''].filter(Boolean);
-    const copilotArgs = args.slice(1).filter(a => !squadFlags.includes(a));
-    await runStart(getSquadStartDir(), { tunnel: hasTunnel, port, copilotArgs, command: customCmd });
+    const runtimeArgs = args.slice(1).filter(a => !squadFlags.includes(a));
+    await runStart(getSquadStartDir(), { tunnel: hasTunnel, port, runtimeArgs, command: customCmd });
     return;
   }
 

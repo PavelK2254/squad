@@ -1,13 +1,13 @@
 /**
- * Execute capability — spawns Copilot sessions for eligible issues.
+ * Execute capability — spawns runtime sessions for eligible issues.
  */
 
-import { execFile, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import type { WatchCapability, WatchContext, PreflightResult, CapabilityResult } from '../types.js';
 import type { MachineCapabilities } from '@bradygaster/squad-sdk/ralph/capabilities';
 import { createVerboseLogger } from '../verbose.js';
+import { createRuntime } from '../../../../runtime/runtime.js';
 
 /** Normalized work item for execution. */
 export interface ExecutableWorkItem {
@@ -43,24 +43,6 @@ export function classifyIssue(title: string): 'read' | 'write' {
   const isWrite = WRITE_KEYWORDS.some(k => lower.includes(k));
   if (isRead && !isWrite) return 'read';
   return 'write'; // default to write (safer — gets full agent session)
-}
-
-/** Build agent command for a prompt. */
-function buildAgentCommand(
-  prompt: string,
-  context: WatchContext,
-): { cmd: string; args: string[] } {
-  if (context.agentCmd) {
-    const parts = context.agentCmd.trim().split(/\s+/);
-    const cmd = parts[0]!;
-    const args = [...parts.slice(1), '-p', prompt];
-    return { cmd, args };
-  }
-  const args = ['-p', prompt];
-  if (context.copilotFlags) {
-    args.push(...context.copilotFlags.trim().split(/\s+/));
-  }
-  return { cmd: 'copilot', args };
 }
 
 /** Labels that indicate an issue should not be auto-executed. */
@@ -148,52 +130,36 @@ async function executeAll(
   context: WatchContext,
   timeoutMs: number,
 ): Promise<{ success: boolean; error?: string }> {
-  const prompt = buildAgentPrompt(issues, context.teamRoot);
-  const { cmd, args } = buildAgentCommand(prompt, context);
+  const runtime = createRuntime(context.runtime);
+  const rawPrompt = buildAgentPrompt(issues, context.teamRoot);
+  const prompt = [
+    rawPrompt,
+    '',
+    'Return ONLY JSON with this schema:',
+    '{"summary":"","files_changed":[],"commands_executed":[],"status":"success|failed","next_actions":[]}',
+  ].join('\n');
 
-  return new Promise<{ success: boolean; error?: string }>((resolve) => {
-    const cp: ChildProcess = execFile(
-      cmd,
-      args,
-      { cwd: context.teamRoot, timeout: timeoutMs, maxBuffer: 50 * 1024 * 1024 },
-      (err) => {
-        if (err) {
-          const execErr = err as Error & { killed?: boolean };
-          const msg = execErr.killed ? `Timed out` : execErr.message;
-          resolve({ success: false, error: msg });
-        } else {
-          resolve({ success: true });
-        }
-      },
-    );
-
-    // Track child PID for cleanup on exit/crash
-    if (context.pidTracker && cp.pid) {
-      const issueNums = issues.map(i => `#${i.number}`).join(',');
-      context.pidTracker.track(cp.pid, `copilot-session-${issueNums}`);
-    }
-
-    cp.on('exit', () => {
-      if (context.pidTracker && cp.pid) {
-        context.pidTracker.untrack(cp.pid);
-      }
-    });
+  const output = await runtime.executeTask({
+    prompt,
+    cwd: context.teamRoot,
+    timeoutMs,
   });
+  return output.success
+    ? { success: output.result.status === 'success', error: output.result.error }
+    : { success: false, error: output.error ?? output.result.error ?? 'Runtime execution failed' };
 }
 
 export class ExecuteCapability implements WatchCapability {
   readonly name = 'execute';
-  readonly description = 'Spawn Copilot sessions to work on eligible issues';
+  readonly description = 'Spawn runtime sessions to work on eligible issues';
   readonly configShape = 'boolean' as const;
   readonly requires = ['gh'];
   readonly phase = 'post-execute' as const;
 
   async preflight(_context: WatchContext): Promise<PreflightResult> {
-    return new Promise<PreflightResult>((resolve) => {
-      execFile('gh', ['--version'], (err) => {
-        resolve(err ? { ok: false, reason: 'gh CLI not found' } : { ok: true });
-      });
-    });
+    const runtime = createRuntime(_context.runtime);
+    const check = await runtime.checkAvailable();
+    return check.ok ? { ok: true } : { ok: false, reason: check.reason };
   }
 
   async execute(context: WatchContext): Promise<CapabilityResult> {
@@ -202,7 +168,7 @@ export class ExecuteCapability implements WatchCapability {
     try {
       const timeout = ((context.config['timeout'] as number) ?? 30) * 60_000;
 
-      vlog.log(`Execute: agentCmd=${context.agentCmd ?? 'copilot'}, timeout=${timeout / 60_000}m`);
+      vlog.log(`Execute: provider=${context.runtime?.provider ?? 'claude'}, timeout=${timeout / 60_000}m`);
 
       // Fetch open issues with squad label
       const sdkItems = await context.adapter.listWorkItems({ tags: ['squad'], state: 'open', limit: 50 });

@@ -41,6 +41,8 @@ import type { WatchCapability, WatchContext, WatchPhase, CapabilityResult } from
 import { CapabilityRegistry } from './registry.js';
 import { createDefaultRegistry } from './capabilities/index.js';
 import { createVerboseLogger, type VerboseLogger } from './verbose.js';
+import { createRuntime } from '../../../runtime/runtime.js';
+import type { RuntimeConfig } from '../../../runtime/types.js';
 
 // ── Re-exports for backward compatibility ────────────────────────
 
@@ -561,6 +563,7 @@ export interface WatchOptions {
   execute?: boolean;
   copilotFlags?: string;
   agentCmd?: string;
+  runtime?: RuntimeConfig;
   maxConcurrent?: number;
   issueTimeoutMinutes?: number;
   monitorTeams?: boolean;
@@ -593,6 +596,7 @@ function legacyToConfig(options: WatchOptions): WatchConfig {
     timeout: options.issueTimeoutMinutes ?? 30,
     copilotFlags: options.copilotFlags,
     agentCmd: options.agentCmd,
+    runtime: options.runtime,
     capabilities,
   };
 }
@@ -639,21 +643,24 @@ export async function executeIssue(
   const timeoutMs = (options.issueTimeoutMinutes ?? 30) * 60_000;
   try { await editWorkItem(adapter, issue.number, { addAssignee: '@me' }); } catch { /* best-effort */ }
   try { await adapter.addComment(issue.number, '🤖 Ralph: starting autonomous work on this issue.'); } catch { /* best-effort */ }
-  const { cmd, args } = buildAgentCommand(issue, teamRoot, options);
-  console.log(`${GREEN}▶${RESET} [${ts}] Executing #${issue.number} "${issue.title}" → ${cmd} ${args.join(' ')}`);
-  return new Promise((resolve) => {
-    execFile(cmd, args, { cwd: teamRoot, timeout: timeoutMs, maxBuffer: 50 * 1024 * 1024 }, (err) => {
-      if (err) {
-        const execErr = err as Error & { killed?: boolean };
-        const msg = execErr.killed ? `Timed out after ${options.issueTimeoutMinutes ?? 30}m` : execErr.message;
-        console.error(`${RED}✗${RESET} [${new Date().toLocaleTimeString()}] #${issue.number} failed: ${msg}`);
-        resolve({ success: false, error: msg });
-      } else {
-        console.log(`${GREEN}✓${RESET} [${new Date().toLocaleTimeString()}] #${issue.number} completed`);
-        resolve({ success: true });
-      }
-    });
+  const runtime = createRuntime(options.runtime);
+  const output = await runtime.executeTask({
+    prompt: [
+      `Work on issue #${issue.number}: ${issue.title}. Read the issue body for full details.`,
+      '',
+      'Return ONLY JSON with this schema:',
+      '{"summary":"","files_changed":[],"commands_executed":[],"status":"success|failed","next_actions":[]}',
+    ].join('\n'),
+    cwd: teamRoot,
+    timeoutMs,
   });
+  if (output.result.status === 'success') {
+    console.log(`${GREEN}✓${RESET} [${new Date().toLocaleTimeString()}] #${issue.number} completed`);
+    return { success: true };
+  }
+  const msg = output.result.error ?? output.error ?? 'Runtime execution failed';
+  console.error(`${RED}✗${RESET} [${new Date().toLocaleTimeString()}] #${issue.number} failed: ${msg}`);
+  return { success: false, error: msg };
 }
 
 // ── Main Entry Point ─────────────────────────────────────────────
@@ -806,19 +813,25 @@ export async function runWatch(dest: string, options: WatchOptions | WatchConfig
     config: {},
     agentCmd: config.agentCmd,
     copilotFlags: config.copilotFlags,
+    runtime: config.runtime,
     verbose: config.verbose,
     pidTracker,
   };
 
   const enabledCapabilities = await preflightCapabilities(registry, config, baseContext);
+  const runtime = createRuntime(config.runtime);
+  const runtimeCheck = await runtime.checkAvailable();
+  if (!runtimeCheck.ok) {
+    fatal(runtimeCheck.reason ?? 'Runtime unavailable');
+  }
 
   // Print startup banner
   const modeTag = config.execute ? ` ${BOLD}(Execute)${RESET}` : '';
   const platformTag = ` [${adapter.type}]`;
   console.log(`\n${BOLD}🔄 Ralph — Watch Mode${RESET}${modeTag}${platformTag}`);
   console.log(`${DIM}Polling every ${interval} minute(s) for squad work. Ctrl+C to stop.${RESET}`);
-  if (config.execute && config.copilotFlags) {
-    console.log(`${DIM}Copilot flags: ${config.copilotFlags}${RESET}`);
+  if (config.execute && config.runtime?.args?.length) {
+    console.log(`${DIM}Runtime args: ${config.runtime.args.join(' ')}${RESET}`);
   }
   if (config.execute) {
     console.log(`${DIM}Max concurrent: ${config.maxConcurrent} | Timeout: ${config.timeout}m${RESET}`);

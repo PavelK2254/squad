@@ -69,10 +69,10 @@ export async function runRC(cwd: string, options: RCOptions): Promise<void> {
     }
   }
 
-  // Copilot passthrough will be set up after bridge starts
+  // Runtime passthrough will be set up after bridge starts
   const { spawn: spawnChild } = await import('node:child_process');
   const { createInterface: createRL } = await import('node:readline');
-  let copilotReady = false;
+  let runtimeReady = false;
 
   // Create bridge config (fallback when passthrough is NOT active)
   const config: RemoteBridgeConfig = {
@@ -86,17 +86,17 @@ export async function runRC(cwd: string, options: RCOptions): Promise<void> {
       console.log(`  ${CYAN}←${RESET} ${DIM}Remote prompt:${RESET} ${text}`);
       bridge.addMessage('user', text);
       const agent = agents.length > 0 ? agents[0]! : { name: 'Assistant', role: 'General' };
-      bridge.addMessage('agent', `[Copilot passthrough not active] Echo: ${text}`, agent.name);
+      bridge.addMessage('agent', `[Runtime passthrough not active] Echo: ${text}`, agent.name);
     },
     onDirectMessage: async (agentName, text) => {
       console.log(`  ${CYAN}←${RESET} ${DIM}Remote @${agentName}:${RESET} ${text}`);
       bridge.addMessage('user', `@${agentName} ${text}`);
-      bridge.addMessage('agent', `[Copilot passthrough not active] Echo: ${text}`, agentName);
+      bridge.addMessage('agent', `[Runtime passthrough not active] Echo: ${text}`, agentName);
     },
     onCommand: (name) => {
       console.log(`  ${CYAN}←${RESET} ${DIM}Remote /${name}${RESET}`);
       if (name === 'status') {
-        bridge.addMessage('system', `Squad RC | Repo: ${repo} | Branch: ${branch} | Agents: ${agents.length} | Copilot: ${copilotReady ? 'passthrough' : 'off'} | Connections: ${bridge.getConnectionCount()}`);
+        bridge.addMessage('system', `Squad RC | Repo: ${repo} | Branch: ${branch} | Agents: ${agents.length} | Runtime: ${runtimeReady ? 'passthrough' : 'off'} | Connections: ${bridge.getConnectionCount()}`);
       } else if (name === 'agents') {
         const list = agents.map(a => `• ${a.name} (${a.role})`).join('\n');
         bridge.addMessage('system', `Team Roster:\n${list || 'No agents loaded'}`);
@@ -172,8 +172,8 @@ export async function runRC(cwd: string, options: RCOptions): Promise<void> {
   const localUrl = `http://localhost:${actualPort}`;
 
   // Initialize agent roster in bridge
-  const allAgents = copilotReady
-    ? [{ name: 'Copilot', role: 'AI Assistant', status: 'idle' as const }, ...agents.map(a => ({ name: a.name, role: a.role, status: 'idle' as const }))]
+  const allAgents = runtimeReady
+    ? [{ name: 'Runtime', role: 'AI Assistant', status: 'idle' as const }, ...agents.map(a => ({ name: a.name, role: a.role, status: 'idle' as const }))]
     : agents.map(a => ({ name: a.name, role: a.role, status: 'idle' as const }));
   if (allAgents.length > 0) {
     bridge.updateAgents(allAgents);
@@ -182,10 +182,8 @@ export async function runRC(cwd: string, options: RCOptions): Promise<void> {
   console.log(`  ${GREEN}✓${RESET} Bridge running on port ${BOLD}${actualPort}${RESET}`);
   console.log(`  ${DIM}Local:${RESET}   ${localUrl}\n`);
 
-  // Spawn copilot --acp as transparent relay (dumb pipe)
-  // Copilot needs ~20s to load MCP servers before accepting ACP requests
-  // Try to find copilot in common locations, fall back to PATH
-  let copilotCmd = 'copilot';
+  // Spawn runtime stdio bridge as transparent relay (dumb pipe)
+  let runtimeCmd = process.env['SQUAD_RUNTIME_EXEC'] || 'claude';
   
   // On Windows, try the global npm location first
   if (process.platform === 'win32') {
@@ -194,34 +192,35 @@ export async function runRC(cwd: string, options: RCOptions): Promise<void> {
       'node_modules', '@github', 'copilot-win32-x64', 'copilot.exe'
     );
     if (storage.existsSync(winPath)) {
-      copilotCmd = winPath;
+      runtimeCmd = winPath;
     }
   }
 
-  console.log(`  ${DIM}Spawning copilot --acp (MCP servers loading ~15-20s)...${RESET}`);
-  let copilotProc: ReturnType<typeof spawnChild> | null = null;
+  const runtimeArgs = (process.env['SQUAD_RUNTIME_ARGS'] ?? '--stdio').split(/\s+/).filter(Boolean);
+  console.log(`  ${DIM}Spawning runtime ${runtimeCmd} ${runtimeArgs.join(' ')}...${RESET}`);
+  let runtimeProc: ReturnType<typeof spawnChild> | null = null;
   try {
-    copilotProc = spawnChild(copilotCmd, ['--acp'], {
+    runtimeProc = spawnChild(runtimeCmd, runtimeArgs, {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    copilotProc.on('error', (err) => {
-      console.log(`  ${YELLOW}⚠${RESET} Copilot error: ${err.message}`);
+    runtimeProc.on('error', (err) => {
+      console.log(`  ${YELLOW}⚠${RESET} Runtime error: ${err.message}`);
     });
-    copilotProc.on('exit', (code) => {
-      console.log(`  ${DIM}[copilot] exited with code ${code}${RESET}`);
-      copilotReady = false;
+    runtimeProc.on('exit', (code) => {
+      console.log(`  ${DIM}[runtime] exited with code ${code}${RESET}`);
+      runtimeReady = false;
     });
-    copilotProc.stderr?.on('data', (d: Buffer) => {
+    runtimeProc.stderr?.on('data', (d: Buffer) => {
       const text = d.toString().trim();
       if (text && !text.includes('[mcp server') && !text.includes('npm ')) {
-        console.log(`  ${DIM}[copilot] ${text}${RESET}`);
+        console.log(`  ${DIM}[runtime] ${text}${RESET}`);
       }
     });
 
-    // copilot stdout → all WebSocket clients (raw JSON-RPC)
-    const rl = createRL({ input: copilotProc.stdout!, terminal: false });
+    // runtime stdout → all WebSocket clients (raw line protocol)
+    const rl = createRL({ input: runtimeProc.stdout!, terminal: false });
     rl.on('line', (line) => {
       if (line.trim()) {
         console.log(`  ${GREEN}→${RESET} ${DIM}ACP out: ${line.substring(0, 100)}${RESET}`);
@@ -229,18 +228,18 @@ export async function runRC(cwd: string, options: RCOptions): Promise<void> {
       }
     });
 
-    // WebSocket → copilot stdin (raw JSON-RPC)
+    // WebSocket → runtime stdin (raw line protocol)
     bridge.setPassthrough((msg) => {
-      if (copilotProc?.stdin?.writable) {
+      if (runtimeProc?.stdin?.writable) {
         console.log(`  ${CYAN}←${RESET} ${DIM}ACP in: ${msg.substring(0, 100)}${RESET}`);
-        copilotProc.stdin.write(msg.endsWith('\n') ? msg : msg + '\n');
+        runtimeProc.stdin.write(msg.endsWith('\n') ? msg : msg + '\n');
       }
     });
 
-    copilotReady = true;
-    console.log(`  ${GREEN}✓${RESET} Copilot ACP passthrough active\n`);
+    runtimeReady = true;
+    console.log(`  ${GREEN}✓${RESET} Runtime passthrough active\n`);
   } catch (err) {
-    console.log(`  ${YELLOW}⚠${RESET} Copilot not available: ${(err as Error).message}\n`);
+    console.log(`  ${YELLOW}⚠${RESET} Runtime not available: ${(err as Error).message}\n`);
   }
 
   // Tunnel setup
@@ -284,7 +283,7 @@ export async function runRC(cwd: string, options: RCOptions): Promise<void> {
   const cleanup = async () => {
     console.log(`\n  ${DIM}Shutting down...${RESET}`);
     clearInterval(checkInterval);
-    copilotProc?.kill();
+    runtimeProc?.kill();
     destroyTunnel();
     await bridge.stop();
     console.log(`  ${GREEN}✓${RESET} Stopped.\n`);

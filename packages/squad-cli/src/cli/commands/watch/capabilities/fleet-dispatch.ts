@@ -8,13 +8,13 @@
  * analysis tracks inside one Copilot invocation.
  */
 
-import { execSync, execFileSync } from 'node:child_process';
 import { writeFileSync, readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { WatchCapability, WatchContext, PreflightResult, CapabilityResult } from '../types.js';
 import type { MachineCapabilities } from '@bradygaster/squad-sdk/ralph/capabilities';
 import type { DispatchMode } from '../config.js';
+import { createRuntime } from '../../../../runtime/runtime.js';
 import {
   type ExecutableWorkItem,
   findExecutableIssues,
@@ -58,12 +58,12 @@ function buildFleetPrompt(
   ].join('\n');
 }
 
-/** Invoke a fleet prompt via the Copilot CLI. */
-function invokeFleet(
+/** Invoke a fleet prompt via the configured runtime. */
+async function invokeFleet(
   prompt: string,
-  cwd: string,
+  context: WatchContext,
   timeoutMs: number,
-): { success: boolean; output?: string; error?: string } {
+): Promise<{ success: boolean; output?: string; error?: string }> {
   const promptFile = join(tmpdir(), `fleet-prompt-${Date.now()}.txt`);
   writeFileSync(promptFile, prompt, 'utf-8');
 
@@ -71,25 +71,23 @@ function invokeFleet(
     // Read the prompt from file
     const promptContent = readFileSync(promptFile, 'utf-8');
 
-    // Use execFileSync with args array — no shell, no injection risk
-    const copilotBin = process.platform === 'win32' ? 'copilot.cmd' : 'copilot';
-    const result = execFileSync(copilotBin, [
-      '-p', promptContent,
-      '--allow-all',
-      '--no-ask-user',
-      '--autopilot',
-    ], {
-      cwd,
-      timeout: timeoutMs,
-      encoding: 'utf-8' as BufferEncoding,
+    const runtime = createRuntime(context.runtime);
+    const output = await runtime.executeTask({
+      prompt: [
+        promptContent,
+        '',
+        'Return ONLY JSON with this schema:',
+        '{"summary":"","files_changed":[],"commands_executed":[],"status":"success|failed","next_actions":[]}',
+      ].join('\n'),
+      cwd: context.teamRoot,
+      timeoutMs,
     });
-
-    return { success: true, output: String(result) };
+    return output.result.status === 'success'
+      ? { success: true, output: output.stdout }
+      : { success: false, error: output.result.error ?? output.error };
   } catch (e) {
-    const err = e as Error & { killed?: boolean; stderr?: string };
-    const msg = err.killed
-      ? `Fleet dispatch timed out after ${Math.round(timeoutMs / 60_000)}m`
-      : err.stderr || err.message;
+    const err = e as Error;
+    const msg = err.message;
     return { success: false, error: msg };
   } finally {
     try { unlinkSync(promptFile); } catch { /* best-effort cleanup */ }
@@ -98,19 +96,15 @@ function invokeFleet(
 
 export class FleetDispatchCapability implements WatchCapability {
   readonly name = 'fleet-dispatch';
-  readonly description = 'Batch read-heavy issues into a parallel /fleet Copilot session';
+  readonly description = 'Batch read-heavy issues into a parallel /fleet runtime session';
   readonly configShape = 'boolean' as const;
-  readonly requires = ['gh', 'copilot'];
+  readonly requires = ['gh', 'claude'];
   readonly phase = 'post-execute' as const;
 
   async preflight(_context: WatchContext): Promise<PreflightResult> {
-    // Fleet dispatch requires the copilot CLI — quick sanity check
-    try {
-      execSync('copilot --version', { encoding: 'utf-8', stdio: 'pipe' });
-      return { ok: true };
-    } catch {
-      return { ok: false, reason: 'copilot CLI not found — required for fleet dispatch' };
-    }
+    const runtime = createRuntime(_context.runtime);
+    const check = await runtime.checkAvailable();
+    return check.ok ? { ok: true } : { ok: false, reason: check.reason };
   }
 
   async execute(context: WatchContext): Promise<CapabilityResult> {
@@ -151,7 +145,7 @@ export class FleetDispatchCapability implements WatchCapability {
       // Build and invoke fleet prompt
       const prompt = buildFleetPrompt(readIssues, context.roster);
       const fleetTimeout = Math.max(timeoutMs, 300_000); // at least 5 min for fleet
-      const result = invokeFleet(prompt, context.teamRoot, fleetTimeout);
+      const result = await invokeFleet(prompt, context, fleetTimeout);
 
       if (result.success) {
         return {

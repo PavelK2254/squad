@@ -7,7 +7,6 @@
  */
 
 import path from 'node:path';
-import { execFile, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -22,6 +21,8 @@ import type { WatchCapability, WatchContext, WatchPhase, CapabilityResult } from
 import type { WatchConfig } from './watch/config.js';
 import { createPlatformAdapter } from '@bradygaster/squad-sdk/platform';
 import { parseRoster } from '@bradygaster/squad-sdk/ralph/triage';
+import { createRuntime } from '../../runtime/runtime.js';
+import type { RuntimeConfig } from '../../runtime/types.js';
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -52,6 +53,7 @@ export interface LoopConfig {
   copilotFlags?: string;
   /** Fully override the agent command (e.g., `gh copilot --yolo`). */
   agentCmd?: string;
+  runtime?: RuntimeConfig;
   /** Capability overrides, keyed by capability name. */
   capabilities: Record<string, boolean | Record<string, unknown>>;
 }
@@ -126,23 +128,6 @@ export function generateLoopFile(): string {
   // Walk up from src/cli/commands (or dist/cli/commands) to package root
   const templatePath = path.resolve(here, '..', '..', '..', 'templates', 'loop.md');
   return readFileSync(templatePath, 'utf-8');
-}
-
-// ── Agent Command Builder ────────────────────────────────────────
-
-function buildLoopAgentCommand(
-  prompt: string,
-  options: { agentCmd?: string; copilotFlags?: string },
-): { cmd: string; args: string[] } {
-  if (options.agentCmd) {
-    const parts = options.agentCmd.trim().split(/\s+/);
-    return { cmd: parts[0]!, args: [...parts.slice(1), '-p', prompt] };
-  }
-  const args = ['-p', prompt];
-  if (options.copilotFlags) {
-    args.push(...options.copilotFlags.trim().split(/\s+/));
-  }
-  return { cmd: 'copilot', args };
 }
 
 // ── Capability Phase Runner ──────────────────────────────────────
@@ -242,17 +227,7 @@ function createNoopAdapter(): ReturnType<typeof createPlatformAdapter> {
   } as ReturnType<typeof createPlatformAdapter>;
 }
 
-// ── gh Copilot Preflight ─────────────────────────────────────────
-
-/** Verify the copilot CLI is available. */
-async function checkCopilotCli(): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    execFile('copilot', ['--version'], (err) => {
-      if (err) reject(err);
-      else resolve();
-    });
-  });
-}
+// ── Runtime Preflight ────────────────────────────────────────────
 
 // ── Main Entry Point ─────────────────────────────────────────────
 
@@ -313,13 +288,10 @@ export async function runLoop(dest: string, options: LoopConfig): Promise<void> 
     fatal('timeout must be a positive number of minutes');
   }
 
-  // Preflight: verify copilot CLI is available (skip if user overrides the agent command)
-  if (!options.agentCmd) {
-    try {
-      await checkCopilotCli();
-    } catch {
-      fatal('Copilot CLI required. Install from https://cli.github.com/ and run `gh extension install github/gh-copilot`');
-    }
+  const runtime = createRuntime(options.runtime);
+  const runtimeCheck = await runtime.checkAvailable();
+  if (!runtimeCheck.ok) {
+    fatal(runtimeCheck.reason ?? 'Runtime unavailable');
   }
 
   // Build WatchConfig for capability system
@@ -330,6 +302,7 @@ export async function runLoop(dest: string, options: LoopConfig): Promise<void> 
     timeout: timeoutMinutes,
     copilotFlags: options.copilotFlags,
     agentCmd: options.agentCmd,
+    runtime: options.runtime,
     capabilities: options.capabilities,
   };
 
@@ -354,6 +327,7 @@ export async function runLoop(dest: string, options: LoopConfig): Promise<void> 
     config: {},
     agentCmd: options.agentCmd,
     copilotFlags: options.copilotFlags,
+    runtime: options.runtime,
   };
 
   // Preflight capabilities (pre-scan + housekeeping only)
@@ -370,7 +344,7 @@ export async function runLoop(dest: string, options: LoopConfig): Promise<void> 
 
   let round = 0;
   let roundInProgress = false;
-  let currentChild: ChildProcess | null = null;
+  let activeSessionId: string | null = null;
 
   async function executeRound(): Promise<void> {
     round++;
@@ -382,39 +356,33 @@ export async function runLoop(dest: string, options: LoopConfig): Promise<void> 
 
     // Core: run the loop prompt
     const timeoutMs = timeoutMinutes * 60_000;
-    const { cmd, args } = buildLoopAgentCommand(prompt, {
-      agentCmd: options.agentCmd,
-      copilotFlags: options.copilotFlags,
-    });
     console.log(`${GREEN}▶${RESET} [${ts}] Round ${round} — running loop prompt`);
-
-    await new Promise<void>((resolve) => {
-      currentChild = execFile(
-        cmd,
-        args,
-        { cwd: teamRoot, timeout: timeoutMs, maxBuffer: 50 * 1024 * 1024 },
-        (err) => {
-          currentChild = null;
-          if (err) {
-            const execErr = err as Error & { killed?: boolean };
-            const msg = execErr.killed
-              ? `Timed out after ${timeoutMinutes}m`
-              : execErr.message;
-            console.error(`${RED}✗${RESET} [${new Date().toLocaleTimeString()}] Round ${round} failed: ${msg}`);
-          } else {
-            console.log(`${GREEN}✓${RESET} [${new Date().toLocaleTimeString()}] Round ${round} complete`);
-          }
-          resolve();
-        },
-      );
-
-      currentChild.stdout?.on('data', (chunk: Buffer | string) => {
-        process.stdout.write(chunk);
-      });
-      currentChild.stderr?.on('data', (chunk: Buffer | string) => {
-        process.stderr.write(chunk);
-      });
-    });
+    const session = await runtime.createSession(teamRoot, { mode: 'loop' });
+    activeSessionId = session.id;
+    const output = await runtime.executeTask(
+      {
+        prompt: [
+          prompt,
+          '',
+          'Return ONLY JSON with this schema:',
+          '{"summary":"","files_changed":[],"commands_executed":[],"status":"success|failed","next_actions":[]}',
+        ].join('\n'),
+        cwd: teamRoot,
+        timeoutMs,
+        sessionId: session.id,
+      },
+      {
+        onStdout: chunk => process.stdout.write(chunk),
+        onStderr: chunk => process.stderr.write(chunk),
+      },
+    );
+    activeSessionId = null;
+    if (output.result.status === 'success') {
+      console.log(`${GREEN}✓${RESET} [${new Date().toLocaleTimeString()}] Round ${round} complete`);
+    } else {
+      const msg = output.result.error ?? output.error ?? 'Runtime execution failed';
+      console.error(`${RED}✗${RESET} [${new Date().toLocaleTimeString()}] Round ${round} failed: ${msg}`);
+    }
 
     // Phase 2: housekeeping (monitor-email, monitor-teams, retro, decision-hygiene)
     await runPhase('housekeeping', enabledCapabilities, roundContext, watchConfig);
@@ -444,7 +412,10 @@ export async function runLoop(dest: string, options: LoopConfig): Promise<void> 
     const shutdown = () => {
       if (isShuttingDown) return;
       isShuttingDown = true;
-      if (currentChild) { currentChild.kill(); currentChild = null; }
+      if (activeSessionId) {
+        runtime.cancel(activeSessionId).catch(() => {});
+        activeSessionId = null;
+      }
       clearInterval(intervalId);
       process.off('SIGINT', shutdown);
       process.off('SIGTERM', shutdown);

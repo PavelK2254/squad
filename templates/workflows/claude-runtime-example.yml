@@ -1,0 +1,20 @@
+name: Claude Runtime Issue Loop
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  squad_watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: npm ci
+      - name: Run Squad watch with Claude runtime
+        run: >
+          npx squad watch --execute --interval 15
+          --runtime-exec claude
+          --runtime-model claude-sonnet-4
+          --runtime-timeout 300

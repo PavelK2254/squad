@@ -2,11 +2,11 @@
  * Squad Start — PTY Mirror Mode
  *
  * `squad start [--tunnel]`
- * Spawns copilot in a PTY (pseudo-terminal) — you see the EXACT same
- * TUI as running copilot directly. The raw terminal output is mirrored
+ * Spawns the configured runtime in a PTY (pseudo-terminal). The raw
+ * terminal output is mirrored
  * to a remote PWA via WebSocket + devtunnel.
  *
- * Bidirectional: keyboard input from terminal AND phone both go to copilot.
+ * Bidirectional: keyboard input from terminal AND phone both go to runtime.
  */
 
 import path from 'node:path';
@@ -36,7 +36,7 @@ const MISSING_MODULE_RE =
 export interface StartOptions {
   tunnel: boolean;
   port: number;
-  copilotArgs?: string[];
+  runtimeArgs?: string[];
   command?: string;
 }
 
@@ -139,7 +139,7 @@ export async function runStart(cwd: string, options: StartOptions): Promise<void
         const qrcode = (await import('qrcode-terminal')) as any;
         qrcode.default.generate(tunnelUrlWithToken, { small: true }, (code: string) => { console.log(code); });
       } catch {}
-      console.log(`${DIM}Scan QR or open URL on phone. Starting copilot...${RESET}\n`);
+      console.log(`${DIM}Scan QR or open URL on phone. Starting runtime...${RESET}\n`);
       console.log(`  ${DIM}Audit log:${RESET} ${bridge.getAuditLogPath()}`);
       console.log(`  ${DIM}Session expires:${RESET} ${new Date(bridge.getSessionExpiry()).toLocaleTimeString()}`);
     } catch (err) {
@@ -149,21 +149,21 @@ export async function runStart(cwd: string, options: StartOptions): Promise<void
     console.log(`${YELLOW}⚠${RESET} devtunnel not installed. Local mirror on port ${actualPort}.`);
   }
 
-  // ─── Spawn copilot in PTY ─────────────────────────────────
+  // ─── Spawn runtime in PTY ─────────────────────────────────
 
   const copilotExePath = path.join(
     'C:', 'ProgramData', 'global-npm', 'node_modules', '@github', 'copilot',
     'node_modules', '@github', 'copilot-win32-x64', 'copilot.exe'
   );
-  const defaultCmd = storage.existsSync(copilotExePath) ? copilotExePath : 'copilot';
-  const copilotCmd = options.command || defaultCmd;
+  const defaultCmd = options.command || process.env['SQUAD_RUNTIME_EXEC'] || 'claude';
+  const runtimeCmd = storage.existsSync(copilotExePath) ? copilotExePath : defaultCmd;
 
   const cols = process.stdout.columns || 120;
   const rows = process.stdout.rows || 30;
 
-  const copilotExtraArgs = options.copilotArgs || [];
-  if (copilotExtraArgs.length > 0) {
-    console.log(`  ${DIM}Copilot flags:${RESET} ${copilotExtraArgs.join(' ')}\n`);
+  const runtimeExtraArgs = options.runtimeArgs || [];
+  if (runtimeExtraArgs.length > 0) {
+    console.log(`  ${DIM}Runtime args:${RESET} ${runtimeExtraArgs.join(' ')}\n`);
   }
 
   // F-07: Security — blocklist dangerous environment variables for PTY
@@ -182,7 +182,7 @@ export async function runStart(cwd: string, options: StartOptions): Promise<void
     }
   }
 
-  const pty = nodePty.spawn(copilotCmd, copilotExtraArgs, {
+  const pty = nodePty.spawn(runtimeCmd, runtimeExtraArgs, {
     name: 'xterm-256color',
     cols,
     rows,
@@ -195,7 +195,7 @@ export async function runStart(cwd: string, options: StartOptions): Promise<void
 
   // PTY output → local terminal + remote
   pty.onData((data: string) => {
-    // Write to local terminal (exact copilot output)
+    // Write to local terminal (exact runtime output)
     process.stdout.write(data);
 
     // Buffer for remote clients
@@ -210,7 +210,7 @@ export async function runStart(cwd: string, options: StartOptions): Promise<void
   });
 
   pty.onExit(({ exitCode }: { exitCode: number }) => {
-    console.log(`\n${DIM}Copilot exited (code ${exitCode}).${RESET}`);
+    console.log(`\n${DIM}Runtime exited (code ${exitCode}).${RESET}`);
     destroyTunnel();
     bridge?.stop();
     process.exit(exitCode);

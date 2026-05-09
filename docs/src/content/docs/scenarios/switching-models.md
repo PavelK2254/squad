@@ -49,7 +49,7 @@ All agents now use claude-haiku-4.5 (fast/cheap tier)
 Agents will be faster but may need more guidance on complex tasks.
 ```
 
-This is written to `.ai-team/model-config.json`:
+This is written to `.squad/config.json` runtime/model settings:
 
 ```json
 {
@@ -80,7 +80,7 @@ All other agents → claude-sonnet-4.5 (standard tier)
 Neo will give higher-quality code reviews and architectural guidance.
 ```
 
-This is written to `.ai-team/model-config.json`:
+This is written to `.squad/config.json` runtime/model settings:
 
 ```json
 {

@@ -2,8 +2,8 @@
  * WaveDispatch capability — parallel sub-task execution within issues.
  */
 
-import { execFile, type ChildProcess } from 'node:child_process';
 import type { WatchCapability, WatchContext, PreflightResult, CapabilityResult } from '../types.js';
+import { createRuntime } from '../../../../runtime/runtime.js';
 
 interface SubTask {
   description: string;
@@ -34,36 +34,25 @@ function parseSubTasks(body: string | undefined): SubTask[] {
   return tasks;
 }
 
-function buildAgentCommand(prompt: string, context: WatchContext): { cmd: string; args: string[] } {
-  if (context.agentCmd) {
-    const parts = context.agentCmd.trim().split(/\s+/);
-    return { cmd: parts[0]!, args: [...parts.slice(1), '-p', prompt] };
-  }
-  const args = ['-p', prompt];
-  if (context.copilotFlags) args.push(...context.copilotFlags.trim().split(/\s+/));
-  return { cmd: 'copilot', args };
-}
-
-function executeSubTask(
+async function executeSubTask(
   prompt: string,
   context: WatchContext,
   timeoutMs: number,
 ): Promise<{ success: boolean; error?: string }> {
-  const { cmd, args } = buildAgentCommand(prompt, context);
-  return new Promise((resolve) => {
-    const _cp: ChildProcess = execFile(
-      cmd, args,
-      { cwd: context.teamRoot, timeout: timeoutMs, maxBuffer: 50 * 1024 * 1024 },
-      (err) => {
-        if (err) {
-          const execErr = err as Error & { killed?: boolean };
-          resolve({ success: false, error: execErr.killed ? 'Timed out' : execErr.message });
-        } else {
-          resolve({ success: true });
-        }
-      },
-    );
+  const runtime = createRuntime(context.runtime);
+  const output = await runtime.executeTask({
+    prompt: [
+      prompt,
+      '',
+      'Return ONLY JSON with this schema:',
+      '{"summary":"","files_changed":[],"commands_executed":[],"status":"success|failed","next_actions":[]}',
+    ].join('\n'),
+    cwd: context.teamRoot,
+    timeoutMs,
   });
+  return output.result.status === 'success'
+    ? { success: true }
+    : { success: false, error: output.result.error ?? output.error };
 }
 
 export class WaveDispatchCapability implements WatchCapability {

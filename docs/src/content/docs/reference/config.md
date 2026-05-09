@@ -69,7 +69,7 @@ Each builder (`defineSquad()`, `defineTeam()`, `defineAgent()`, etc.) validates 
 ├── decisions.md         # Architectural decisions (shared memory)
 ├── directives.md        # Permanent team rules
 ├── casting-state.json   # Agent names + universe theme
-├── model-config.json    # Per-agent model overrides
+├── config.json          # Runtime + watch settings
 ├── agents/
 │   ├── {name}/
 │   │   ├── charter.md   # Role, expertise, voice
@@ -82,6 +82,27 @@ Each builder (`defineSquad()`, `defineTeam()`, `defineAgent()`, etc.) validates 
 ```
 
 Commit this directory. It's your team's brain. Anyone who clones the repo gets the full team with all their knowledge.
+
+## Runtime configuration
+
+Configure Claude runtime execution in `.squad/config.json`:
+
+```json
+{
+  "watch": {
+    "runtime": {
+      "provider": "claude",
+      "executable": "claude",
+      "model": "claude-sonnet-4",
+      "timeoutSeconds": 300,
+      "maxIterations": 10,
+      "retryAttempts": 2
+    }
+  }
+}
+```
+
+Runtime responses are expected to be machine-readable JSON and parsed by Squad before orchestration consumes them.
 
 ---
 

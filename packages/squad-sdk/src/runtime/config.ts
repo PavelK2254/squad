@@ -305,6 +305,20 @@ export interface SquadConfig {
   
   /** Platform-specific overrides */
   platforms?: PlatformOverrides;
+
+  /** Execution runtime backend configuration. */
+  runtime?: {
+    provider: 'claude';
+    executable?: string;
+    model?: string;
+    timeout?: number;
+    max_iterations?: number;
+    context_limit?: number;
+    retry_strategy?: {
+      attempts?: number;
+      backoff_ms?: number;
+    };
+  };
   
   /** Custom extensions */
   [key: string]: unknown;
@@ -375,6 +389,12 @@ export const DEFAULT_CONFIG: SquadConfig = {
       disableModelSelection: false,
       scribeMode: 'sync'
     }
+  },
+  runtime: {
+    provider: 'claude',
+    model: 'claude-sonnet-4',
+    timeout: 300,
+    max_iterations: 10,
   }
 };
 
@@ -698,6 +718,19 @@ export function validateConfigDetailed(config: unknown): ValidationResult {
           }
         });
       }
+    }
+  }
+
+  // Validate runtime section if present
+  if (cfg.runtime) {
+    if (cfg.runtime.provider !== 'claude') {
+      errors.push('config.runtime.provider must be "claude"');
+    }
+    if (cfg.runtime.timeout !== undefined && typeof cfg.runtime.timeout !== 'number') {
+      errors.push('config.runtime.timeout must be a number');
+    }
+    if (cfg.runtime.max_iterations !== undefined && typeof cfg.runtime.max_iterations !== 'number') {
+      errors.push('config.runtime.max_iterations must be a number');
     }
   }
   

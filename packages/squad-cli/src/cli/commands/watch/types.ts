@@ -6,6 +6,7 @@
  */
 
 import type { PlatformAdapter } from '@bradygaster/squad-sdk/platform';
+import type { RuntimeConfig } from '../../../runtime/types.js';
 
 /** Phase within a single watch round. */
 export type WatchPhase = 'pre-scan' | 'post-triage' | 'post-execute' | 'housekeeping';
@@ -37,6 +38,8 @@ export interface WatchContext {
   /** Hidden --agent-cmd override. */
   agentCmd?: string;
   copilotFlags?: string;
+  /** Runtime execution configuration. */
+  runtime?: RuntimeConfig;
   /** Verbose diagnostic output enabled. */
   verbose?: boolean;
   /** PID tracker for child process cleanup (optional — only set when watch is running). */

@@ -7,6 +7,7 @@
 import path from 'node:path';
 import { FSStorageProvider } from '@bradygaster/squad-sdk';
 import type { SquadStateContext, StateBackendType } from '@bradygaster/squad-sdk';
+import type { RuntimeConfig } from '../../../runtime/types.js';
 
 const storage = new FSStorageProvider();
 
@@ -22,6 +23,8 @@ export interface WatchConfig {
   copilotFlags?: string;
   /** Hidden — fully override the agent command. */
   agentCmd?: string;
+  /** Runtime provider config (Claude by default). */
+  runtime?: RuntimeConfig;
   /** Dispatch mode: 'task' (default 1:1), 'fleet' (batch read-only), 'hybrid' (auto-classify). */
   dispatchMode?: DispatchMode;
   /** Optional path to a log file. When set, console output is tee'd to the file with timestamps. */
@@ -88,6 +91,7 @@ export function loadWatchConfig(
     timeout: cliOverrides.timeout ?? fileConfig.timeout ?? DEFAULTS.timeout,
     copilotFlags: cliOverrides.copilotFlags ?? fileConfig.copilotFlags ?? DEFAULTS.copilotFlags,
     agentCmd: cliOverrides.agentCmd ?? fileConfig.agentCmd ?? DEFAULTS.agentCmd,
+    runtime: cliOverrides.runtime ?? fileConfig.runtime ?? DEFAULTS.runtime,
     dispatchMode: cliOverrides.dispatchMode ?? fileConfig.dispatchMode ?? DEFAULTS.dispatchMode,
     logFile: cliOverrides.logFile ?? fileConfig.logFile ?? DEFAULTS.logFile,
     capabilities: {
@@ -118,6 +122,19 @@ function normalizeFileConfig(raw: Record<string, unknown>): Partial<WatchConfig>
   if (typeof raw['timeout'] === 'number') result.timeout = raw['timeout'];
   if (typeof raw['copilotFlags'] === 'string') result.copilotFlags = raw['copilotFlags'];
   if (typeof raw['agentCmd'] === 'string') result.agentCmd = raw['agentCmd'];
+  if (typeof raw['runtime'] === 'object' && raw['runtime'] !== null && !Array.isArray(raw['runtime'])) {
+    const runtimeRaw = raw['runtime'] as Record<string, unknown>;
+    result.runtime = {
+      provider: runtimeRaw['provider'] === 'claude' ? 'claude' : 'claude',
+      executable: typeof runtimeRaw['executable'] === 'string' ? runtimeRaw['executable'] : undefined,
+      args: Array.isArray(runtimeRaw['args']) ? runtimeRaw['args'].filter(v => typeof v === 'string') as string[] : undefined,
+      model: typeof runtimeRaw['model'] === 'string' ? runtimeRaw['model'] : undefined,
+      timeoutSeconds: typeof runtimeRaw['timeoutSeconds'] === 'number' ? runtimeRaw['timeoutSeconds'] : undefined,
+      maxIterations: typeof runtimeRaw['maxIterations'] === 'number' ? runtimeRaw['maxIterations'] : undefined,
+      contextLimit: typeof runtimeRaw['contextLimit'] === 'number' ? runtimeRaw['contextLimit'] : undefined,
+      retryAttempts: typeof runtimeRaw['retryAttempts'] === 'number' ? runtimeRaw['retryAttempts'] : undefined,
+    };
+  }
   if (typeof raw['verbose'] === 'boolean') result.verbose = raw['verbose'];
   if (typeof raw['dispatchMode'] === 'string') {
     const mode = raw['dispatchMode'] as string;
@@ -146,7 +163,7 @@ function normalizeFileConfig(raw: Record<string, unknown>): Partial<WatchConfig>
 
   // Everything else is a capability key
   const caps: Record<string, boolean | Record<string, unknown>> = {};
-  const reserved = new Set(['interval', 'execute', 'maxConcurrent', 'timeout', 'copilotFlags', 'agentCmd', 'verbose', 'dispatchMode', 'logFile', 'authUser', 'notifyLevel', 'overnightStart', 'overnightEnd', 'sentinelFile', 'stateBackend']);
+  const reserved = new Set(['interval', 'execute', 'maxConcurrent', 'timeout', 'copilotFlags', 'agentCmd', 'runtime', 'verbose', 'dispatchMode', 'logFile', 'authUser', 'notifyLevel', 'overnightStart', 'overnightEnd', 'sentinelFile', 'stateBackend']);
   for (const [key, value] of Object.entries(raw)) {
     if (reserved.has(key)) continue;
     if (typeof value === 'boolean' || (typeof value === 'object' && value !== null && !Array.isArray(value))) {

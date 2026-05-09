@@ -34,6 +34,10 @@ The coordinator is Squad's routing engine. It reads your request, checks routing
 
 Each agent is a specialist with a charter, role, and persistent memory. Agents are spawned as independent subprocesses with their own context windows and tools. They read `.squad/decisions.md` and their own history before working, then write results back. Agents never see each other's conversations — the coordinator orchestrates coordination.
 
+### Runtime adapter
+
+Execution is routed through a runtime adapter boundary. Squad orchestration (routing, fan-out, memory, workflow semantics) stays the same, while the runtime backend handles session execution, streaming, retries, cancellation, and structured output parsing. The default runtime provider is Claude Code.
+
 ### Memory (.squad/)
 
 All team state lives in `.squad/`. This includes the roster (`team.md`), routing rules (`routing.md`), decisions (`decisions.md`), agent charters and histories (`agents/`), and ceremony schedules (`ceremonies.md`). Agents read this before every spawn. You own these files — edit them anytime.
